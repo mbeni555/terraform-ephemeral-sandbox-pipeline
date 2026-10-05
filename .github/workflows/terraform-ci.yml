@@ -1,0 +1,83 @@
+name: Terraform CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "environments/**"
+      - "modules/**"
+      - ".github/workflows/terraform-ci.yml"
+
+concurrency:
+  group: terraform-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-analysis:
+    name: Static Code Analysis & Formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ">=1.9.0"
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: Initialize TFLint plugins
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: tflint --init --config "${GITHUB_WORKSPACE}/.tflint.hcl"
+
+      - name: Run TFLint
+        run: |
+          set -euo pipefail
+          status=0
+          while IFS= read -r dir; do
+            echo "::group::tflint ${dir}"
+            tflint --chdir "${dir}" --config "${GITHUB_WORKSPACE}/.tflint.hcl" --format compact || status=1
+            echo "::endgroup::"
+          done < <(find environments modules -type f -name '*.tf' -exec dirname {} \; | sort -u)
+          exit "${status}"
+
+  checkov:
+    name: Security Posture Scan (Checkov)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform,github_actions
+          output_format: cli,sarif
+          output_file_path: console,results.sarif
+          soft_fail: false
+          quiet: false
+
+      - name: Upload SARIF to GitHub Security tab
+        if: ${{ always() && hashFiles('results.sarif', 'results.sarif/**') != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: checkov
