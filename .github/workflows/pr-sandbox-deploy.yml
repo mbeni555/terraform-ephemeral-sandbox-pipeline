@@ -41,7 +41,7 @@ jobs:
         run: infracost breakdown --path=environments/sandbox --format=json --out-file=/tmp/infracost.json
 
       - name: Post Infracost comment
-        uses: infracost/actions/comment@v3
+        uses: infracost/actions/comment@v2
         with:
           path: /tmp/infracost.json
           behavior: update
