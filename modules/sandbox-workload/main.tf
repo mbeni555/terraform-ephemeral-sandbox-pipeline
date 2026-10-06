@@ -67,6 +67,32 @@ resource "aws_s3_bucket_lifecycle_configuration" "sandbox_storage_lifecycle" {
   depends_on = [aws_s3_bucket_versioning.sandbox_storage_versioning]
 }
 
+# Enforce SSL/TLS for all S3 bucket requests (Infracost [S3.5] & Checkov compliance)
+resource "aws_s3_bucket_policy" "sandbox_storage_tls_enforce" {
+  bucket = aws_s3_bucket.sandbox_storage.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnforceTLSRequestsOnly"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.sandbox_storage.arn,
+          "${aws_s3_bucket.sandbox_storage.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
 # CloudWatch Log Group with explicit short-term retention
 resource "aws_cloudwatch_log_group" "sandbox_logs" {
   #checkov:skip=CKV_AWS_338: Ephemeral sandbox logs do not require 1-year retention; 7-day retention controls cost.
