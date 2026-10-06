@@ -11,6 +11,7 @@ resource "aws_s3_bucket" "sandbox_storage" {
     Environment = var.environment
     PR_Number   = var.pr_number
     Created_At  = var.created_at
+    Service     = "sandbox-workload"
   }
 }
 
@@ -77,6 +78,7 @@ resource "aws_cloudwatch_log_group" "sandbox_logs" {
     Environment = var.environment
     PR_Number   = var.pr_number
     Created_At  = var.created_at
+    Service     = "sandbox-workload"
   }
 }
 
@@ -89,5 +91,6 @@ resource "aws_s3_object" "sandbox_marker" {
   tags = {
     Environment = var.environment
     PR_Number   = var.pr_number
+    Service     = "sandbox-workload"
   }
 }
