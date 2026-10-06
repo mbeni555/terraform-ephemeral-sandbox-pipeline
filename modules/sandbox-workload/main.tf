@@ -79,3 +79,15 @@ resource "aws_cloudwatch_log_group" "sandbox_logs" {
     Created_At  = var.created_at
   }
 }
+
+# Test object to verify PR deployment and state tracking
+resource "aws_s3_object" "sandbox_marker" {
+  bucket  = aws_s3_bucket.sandbox_storage.id
+  key     = "init.txt"
+  content = "Sandbox deployed via GitHub Actions PR #${var.pr_number} at ${var.created_at}"
+
+  tags = {
+    Environment = var.environment
+    PR_Number   = var.pr_number
+  }
+}
