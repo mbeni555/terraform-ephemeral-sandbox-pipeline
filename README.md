@@ -76,7 +76,7 @@ sequenceDiagram
     Note over WF,TF: Credentials expire automatically and are never written to the repo
 ```
 
-The IAM role's trust policy should restrict which repository and events can assume it. An illustrative example (replace the account ID, owner, and repository):
+The IAM role's trust policy pins the role to this one repository and to pull request events only. Example trust policy (replace the placeholders with your own values):
 
 ```json
 {
@@ -85,15 +85,13 @@ The IAM role's trust policy should restrict which repository and events can assu
     {
       "Effect": "Allow",
       "Principal": {
-        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+        "Federated": "arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
       },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
+          "token.actions.githubusercontent.com:sub": "repo:<GITHUB_OWNER>/<REPOSITORY_NAME>:pull_request",
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-        },
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:<OWNER>/<REPO>:*"
         }
       }
     }
@@ -101,7 +99,128 @@ The IAM role's trust policy should restrict which repository and events can assu
 }
 ```
 
-Narrow the `sub` condition as far as your setup allows. Attach only the permissions the sandbox needs (S3, CloudWatch Logs, and access to the state bucket).
+- **Exact match, no wildcards.** The `sub` condition uses `StringEquals` with the `pull_request` suffix, so only workflow runs triggered by a pull request in this repository can assume the role. Pushes to `main`, other branches, and other repositories are rejected.
+- **Teardown still works.** The destroy workflow runs on the `pull_request` `closed` event, so its token carries the same `pull_request` subject.
+- **Audience is checked.** The `aud` condition makes sure the token was issued for AWS STS.
+- **Subject format.** The example uses GitHub's default subject format. If your organization customizes the OIDC subject claim (for example to include owner and repository IDs), the `sub` value must match that format exactly.
+- **Least privilege.** The role's identity policy (below) is scoped to the state prefix and to sandbox resource names. It cannot manage other buckets or log groups in the account.
+
+### Role permissions (least privilege)
+
+The assumed role can only do three things: read and write Terraform state under `sandboxes/*`, create and destroy the per-PR sandbox buckets (`sandbox-pr-*`), and create and destroy the per-PR CloudWatch log groups (`/sandbox/pr-*`).
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TerraformStateBucket",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::<TF_STATE_BUCKET>",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": ["sandboxes/*"]
+        }
+      }
+    },
+    {
+      "Sid": "TerraformStateObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::<TF_STATE_BUCKET>/sandboxes/*"
+    },
+    {
+      "Sid": "ReadSandboxBucketConfiguration",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetAccelerateConfiguration",
+        "s3:GetBucketAcl",
+        "s3:GetBucketCORS",
+        "s3:GetBucketLocation",
+        "s3:GetBucketLogging",
+        "s3:GetBucketNotification",
+        "s3:GetBucketObjectLockConfiguration",
+        "s3:GetBucketOwnershipControls",
+        "s3:GetBucketPolicy",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketRequestPayment",
+        "s3:GetBucketTagging",
+        "s3:GetBucketVersioning",
+        "s3:GetBucketWebsite",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:GetReplicationConfiguration",
+        "s3:ListBucket",
+        "s3:ListBucketVersions"
+      ],
+      "Resource": "arn:aws:s3:::sandbox-pr-*"
+    },
+    {
+      "Sid": "ManageSandboxBuckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutEncryptionConfiguration",
+        "s3:PutBucketVersioning",
+        "s3:PutLifecycleConfiguration",
+        "s3:PutBucketTagging"
+      ],
+      "Resource": "arn:aws:s3:::sandbox-pr-*"
+    },
+    {
+      "Sid": "ManageSandboxObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:GetObjectTagging",
+        "s3:PutObjectTagging"
+      ],
+      "Resource": "arn:aws:s3:::sandbox-pr-*/*"
+    },
+    {
+      "Sid": "DescribeCloudWatchLogGroups",
+      "Effect": "Allow",
+      "Action": ["logs:DescribeLogGroups"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageSandboxLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:PutRetentionPolicy",
+        "logs:ListTagsForResource",
+        "logs:TagResource",
+        "logs:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:logs:<AWS_REGION>:<AWS_ACCOUNT_ID>:log-group:/sandbox/pr-*",
+        "arn:aws:logs:<AWS_REGION>:<AWS_ACCOUNT_ID>:log-group:/sandbox/pr-*:*"
+      ]
+    }
+  ]
+}
+```
+
+What this policy deliberately cannot do:
+
+- It cannot list or write objects outside `sandboxes/` in the state bucket. Native S3 lockfiles (`.tflock`) live next to the state object, so they stay in scope.
+- It cannot create or modify buckets that do not match `sandbox-pr-*`.
+- It cannot manage CloudWatch log groups outside `/sandbox/pr-*`.
+- `logs:DescribeLogGroups` is the one account-wide action. AWS does not support resource-level authorization for that API, so the policy documents the exception instead of pretending it is scoped.
 
 ## Isolated Terraform state
 
