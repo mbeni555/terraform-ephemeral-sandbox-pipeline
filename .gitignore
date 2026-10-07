@@ -17,3 +17,6 @@ terraform.rc
 .infracost/
 infracost-base.json
 infracost.json
+
+# Editor / AI assistant config
+.cursorrules
